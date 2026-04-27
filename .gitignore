@@ -1,0 +1,7 @@
+# Ignore everything
+*
+
+# Except these
+!script.R
+!README.md
+!.gitignore
