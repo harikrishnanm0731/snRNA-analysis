@@ -275,4 +275,23 @@ marker_list2 <- list(
 )
 
 
+######macrophage markers from-Macrophage subsets in atherosclerosis as defined by single‐cell technologies########
 
+resident_genes <- c("LYVE1", "CX3CR1", "FOLR2", "MRC1", "F13A1", "CBR2", "SEPP1", "PF4", "GAS6")
+
+inflammatory_genes <- c("TNF", "NLRP3", "IL1B", "EGR1", "TLR2", "IER3", "CEBPB",
+                        "CXCL2", "CCL2", "CCL3", "CCL4", "CCL5", "NFKBIA")
+
+trem2_genes <- c("TREM2", "CD9", "LGALS3", "CTSB", "SPP1")
+
+
+
+resident_genes %in% rownames(SC006)
+inflammatory_genes %in% rownames(SC006)
+trem2_genes %in% rownames(SC006)
+
+
+DotPlot(
+  SC006,
+  features = c(resident_genes, inflammatory_genes, trem2_genes)
+) + RotatedAxis()
