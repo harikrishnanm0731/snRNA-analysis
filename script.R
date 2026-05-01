@@ -1,297 +1,427 @@
+# ============================================================
+# Single Nuclei RNA-seq Analysis of Atherosclerotic Plaque
+# Author  : harikrishnanm0731
+# Project : snRNA-seq — SC006 & SC008
+# Updated : April 2026
+# ============================================================
+# OVERVIEW:
+# This script performs end-to-end snRNA-seq analysis of two
+# atherosclerotic plaque samples (SC006, SC008) including:
+#   1. Data loading & Seurat object creation
+#   2. Quality control & filtering
+#   3. Log normalization & variable feature selection
+#   4. CCA integration across samples
+#   5. Dimensionality reduction & clustering
+#   6. Cell type annotation via SingleR
+#   7. Differential gene expression (DEG) analysis
+#   8. Cell type composition visualization
+#   9. Marker gene dot plot
+#  10. Cell-cell communication analysis via CellChat
+# ============================================================
+
+
+# ============================================================
+# 0. SETUP — Working Directory & Libraries
+# ============================================================
 
 getwd()
-setwd("~/snrna-project")  
+setwd("~/snrna-project")
 
 library(Seurat)
 library(patchwork)
 library(dplyr)
 library(harmony)
-
+library(ggplot2)
 library(SingleR)
 library(celldex)
+library(metap)
 library(SingleCellExperiment)
+
+# Install CellChat from GitHub (run only once)
+devtools::install_github("jinworks/CellChat")
+library(CellChat)
+
+# Load Human Primary Cell Atlas reference for SingleR annotation
 ref <- celldex::HumanPrimaryCellAtlasData()
 
 
-#####set the path###############
+# ============================================================
+# 1. DATA LOADING
+# ============================================================
+# CellRanger output path (base directory for all samples)
 base_path <- "SO_14534/CellRanger_Output/"
 
-##########load datasets ###########
-data_SC006 <- Read10X(data.dir = file.path(base_path, "SC006", "sample_filtered_feature_bc_matrix")) 
-data_SC008 <- Read10X(data.dir = file.path(base_path, "SC008", "sample_filtered_feature_bc_matrix")) 
-
-
-
-###########Create Seurat Objects####################################
-SC008 <- CreateSeuratObject(counts = data_SC008, project = "SC008", min.cells = 1, min.features = 100) 
-SC006 <- CreateSeuratObject(counts = data_SC006, project = "SC006", min.cells = 1, min.features = 100) 
-
-
-
-
-# ================================
-# SC006
-# ================================
-SC006[["percent.mt"]] <- PercentageFeatureSet(SC006, pattern = "^MT-|^mt-")
-VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
-FeatureScatter(SC006, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
-FeatureScatter(SC006, feature1 = "nCount_RNA", feature2 = "percent.mt")
-
-SC006<- subset(SC006, subset = nFeature_RNA > 500 & nFeature_RNA < 3000& percent.mt < 5)
-
-SC006 <- NormalizeData(SC006)
-SC006 <- FindVariableFeatures(SC006, selection.method = "vst", nfeatures = 2000)
-VariableFeaturePlot(SC006)
-SC006 <- ScaleData(SC006)
-SC006 <- RunPCA(SC006, npcs = 50)
-ElbowPlot(SC006,ndims = 40)
-
-SC006 <- FindNeighbors(SC006, dims = 1:30)
-SC006 <- FindClusters(SC006, resolution = 0.8)
-SC006 <- RunUMAP(SC006, dims = 1:30)
-DimPlot(SC006, reduction = "umap", label = TRUE)
-
-
-################Sinlge R annotaion -use only just to check the clusters##############
-
-sce006 <- as.SingleCellExperiment(SC006)
-pred006 <- SingleR(test = sce006, ref = ref, labels = ref$label.main, clusters = SC006$seurat_clusters)
-SC006$SingleR_labels <- pred006$labels[SC006$seurat_clusters]
-DimPlot(SC006, group.by = "SingleR_labels", label = TRUE)
+# Read filtered feature-barcode matrices for each sample
+data_SC006 <- Read10X(data.dir = file.path(base_path, "SC006", "sample_filtered_feature_bc_matrix"))
+data_SC008 <- Read10X(data.dir = file.path(base_path, "SC008", "sample_filtered_feature_bc_matrix"))
 
 
 # ============================================================
-#  FIND ALL MARKERS (DEGs per cluster)
+# 2. CREATE SEURAT OBJECTS
 # ============================================================
-markers_SC006 <- FindAllMarkers(
-  SC006,
-  only.pos = TRUE,
-  min.pct = 0.25,
-  logfc.threshold = 0.25
-)
+# min.cells = 1  : keep genes detected in at least 1 cell
+# min.features = 100 : keep cells with at least 100 detected genes
 
-## ============================================================
-# DEG ANALYSIS PER CLUSTER
+SC008 <- CreateSeuratObject(counts = data_SC008, project = "SC008", min.cells = 1, min.features = 100)
+SC006 <- CreateSeuratObject(counts = data_SC006, project = "SC006", min.cells = 1, min.features = 100)
+
+
+# ============================================================
+# 3. QUALITY CONTROL
 # ============================================================
 
-# Top 10 per cluster by log2FC
-top20 <- markers_SC006 %>%
-  filter(p_val_adj < 0.05, avg_log2FC > 0.5) %>%
-  group_by(cluster) %>%
-  slice_max(order_by = avg_log2FC, n = 20)
-
-print(top20 %>% select(cluster, gene, avg_log2FC, pct.1, pct.2, p_val_adj), n = 200)
-write.csv(top20, "SC006_top20_markers_per_cluster.csv", row.names = FALSE)
-
-
-
-# ================================
-# SC008
-# ================================
-SC008[["percent.mt"]] <- PercentageFeatureSet(SC008, pattern = "^MT-|^mt-")
-VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
-FeatureScatter(SC008, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
-FeatureScatter(SC008, feature1 = "nCount_RNA", feature2 = "percent.mt")
-
-SC008 <- subset(SC008, subset = nFeature_RNA > 500 & nFeature_RNA < 4500 & percent.mt < 5)
-
-SC008 <- NormalizeData(SC008)
-SC008 <- FindVariableFeatures(SC008, selection.method = "vst", nfeatures = 2000)
-VariableFeaturePlot(SC008)
-SC008 <- ScaleData(SC008)
-SC008 <- RunPCA(SC008, npcs = 50)
-ElbowPlot(SC008, ndims=50)
-
-SC008 <- FindNeighbors(SC008, dims = 1:30)
-SC008 <- FindClusters(SC008, resolution = 0.5)
-SC008 <- RunUMAP(SC008, dims = 1:30)
-DimPlot(SC008, reduction = "umap", label = TRUE)
-
-
-########single R
-
-sce008 <- as.SingleCellExperiment(SC008)
-pred08 <- SingleR(test = sce008, ref = ref, labels = ref$label.main, clusters = SC008$seurat_clusters)
-SC008$SingleR_labels <- pred008$labels[SC008$seurat_clusters]
-DimPlot(SC008, group.by = "SingleR_labels", label = TRUE)
-
-
-############################checking the pca ####################################
-
-# SC006
-VizDimLoadings(SC006, dims = 1:4, reduction = "pca")
-
-# SC008
-VizDimLoadings(SC008, dims = 1:4, reduction = "pca")
-
-
-load_SC006 <- SC006[["pca"]]@feature.loadings
-load_SC008 <- SC008[["pca"]]@feature.loadings
-
-common_genes <- intersect(rownames(load_SC006), rownames(load_SC008))
-
-
-load_SC006 <- load_SC006[common_genes, ]
-load_SC008 <- load_SC008[common_genes, ]
-
-cor(load_SC006[,1], load_SC008[,1])
-
-
-############merging###############just concatenating the datasets , not integrating
-
+# Add sample ID metadata
 SC006$sample_id <- "SC006"
 SC008$sample_id <- "SC008"
 
-combined <- merge(SC006, SC008)
+# Calculate mitochondrial gene percentage
+# High % suggests damaged/dying cells
+SC006[["percent.mt"]] <- PercentageFeatureSet(SC006, pattern = "^MT-|^mt-")
+SC008[["percent.mt"]] <- PercentageFeatureSet(SC008, pattern = "^MT-|^mt-")
 
-combined <- NormalizeData(combined)
-combined <- FindVariableFeatures(combined, nfeatures = 2000)
-combined <- ScaleData(combined)
-combined <- RunPCA(combined)
+# --- QC Violin Plots BEFORE filtering ---
+VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
 
-ElbowPlot(combined,ndims = 50)
+# --- Filter cells ---
+# nFeature_RNA > 200     : remove empty droplets
+# nFeature_RNA < 4500    : remove likely doublets
+# percent.mt < 5 / < 1   : remove damaged cells
+SC006 <- subset(SC006, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 5)
+SC008 <- subset(SC008, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 1)
+
+# --- QC Violin Plots AFTER filtering ---
+VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
 
 
+# ============================================================
+# 4. NORMALIZATION & VARIABLE FEATURE SELECTION
+# ============================================================
+# LogNormalize: normalize to 10,000 reads per cell, then log-transform
+# FindVariableFeatures: select top 2000 highly variable genes (HVGs)
+# using variance-stabilizing transformation (VST)
+
+SC006 <- NormalizeData(SC006, normalization.method = "LogNormalize", scale.factor = 10000)
+SC006 <- FindVariableFeatures(SC006, selection.method = "vst", nfeatures = 2000)
+
+SC008 <- NormalizeData(SC008, normalization.method = "LogNormalize", scale.factor = 10000)
+SC008 <- FindVariableFeatures(SC008, selection.method = "vst", nfeatures = 2000)
+
+
+# ============================================================
+# 5. INTEGRATION USING CCA (Canonical Correlation Analysis)
+# ============================================================
+# CCA integration corrects for batch effects between SC006 & SC008
+# while preserving biological variation
+
+seurat_list <- list(SC006, SC008)
+
+# Find shared anchors across samples
+anchors <- FindIntegrationAnchors(
+  object.list        = seurat_list,
+  normalization.method = "LogNormalize",
+  anchor.features    = 2000,
+  reduction          = "cca"
+)
+
+# Integrate data into a single Seurat object
+combined <- IntegrateData(
+  anchorset            = anchors,
+  normalization.method = "LogNormalize"
+)
+
+
+# ============================================================
+# 6. SCALING & DIMENSIONALITY REDUCTION
+# ============================================================
+# ScaleData: zero-mean, unit-variance scaling (required before PCA)
+# RunPCA: linear dimensionality reduction
+# ElbowPlot: helps choose the number of PCs to use downstream
+
+DefaultAssay(combined) <- "integrated"
+
+combined <- ScaleData(combined, verbose = FALSE)
+combined <- RunPCA(combined, verbose = FALSE)
+ElbowPlot(combined, ndims = 50)   # inspect to confirm dims = 1:20 is appropriate
+
+# --- Clustering ---
+# FindNeighbors: builds KNN graph using top 20 PCs
+# FindClusters: Louvain algorithm, resolution = 0.3 (lower = fewer clusters)
 combined <- FindNeighbors(combined, dims = 1:20)
-combined <- FindClusters(combined, resolution = 0.5)
+combined <- FindClusters(combined, resolution = 0.3)
+
+# --- UMAP Visualization ---
 combined <- RunUMAP(combined, dims = 1:20)
 
+# Plot by sample to check integration quality
 DimPlot(combined, group.by = "sample_id")
 
-DimPlot(combined, group.by = "seurat_clusters")
+# Plot clusters
+DimPlot(combined, label = TRUE)
+
+# Split by sample to compare cluster distribution
+DimPlot(combined,
+        split.by  = "sample_id",
+        group.by  = "seurat_clusters",
+        label     = TRUE,
+        repel     = TRUE) +
+  ggtitle("Clusters per Sample")
 
 
-################intergrating##########
-library(harmony)
+# ============================================================
+# 7. CELL TYPE ANNOTATION USING SingleR
+# ============================================================
+# SingleR compares cluster expression profiles to a reference
+# dataset (Human Primary Cell Atlas) to assign cell type labels
 
-combined <- RunHarmony(combined, group.by.vars = "sample_id")
+DefaultAssay(combined) <- "RNA"
+
+# Join layers required for Seurat v5 before converting to SCE
+combined[["RNA"]] <- JoinLayers(combined[["RNA"]])
+
+# Convert to SingleCellExperiment format for SingleR
+sce_com <- as.SingleCellExperiment(combined)
+
+# Run SingleR — annotate at the cluster level (faster, more robust)
+pred_com <- SingleR(
+  test     = sce_com,
+  ref      = ref,
+  labels   = ref$label.fine,
+  clusters = combined$seurat_clusters
+)
+
+# Map SingleR labels back to individual cells
+combined$singler_labels <- pred_com$labels[match(
+  combined$seurat_clusters,
+  rownames(pred_com)
+)]
+
+# Visualize SingleR annotation alongside sample distribution
+p1 <- DimPlot(combined, group.by = "singler_labels", label = TRUE, repel = TRUE) +
+  ggtitle("SingleR Cell Type Annotation")
+p2 <- DimPlot(combined, group.by = "sample_id")
+p1 + p2
 
 
-combined <- FindNeighbors(combined, reduction = "harmony", dims = 1:20)
-combined <- FindClusters(combined, resolution = 0.5)
-combined <- RunUMAP(combined, reduction = "harmony", dims = 1:20)
+# ============================================================
+# 8. DIFFERENTIAL GENE EXPRESSION (DEG) ANALYSIS
+# ============================================================
+# FindAllMarkers: finds marker genes for each cluster vs all others
+# only.pos = TRUE       : only upregulated markers
+# min.pct = 0.25        : gene must be detected in ≥25% of cells
+# logfc.threshold = 0.25: minimum log2 fold-change
 
-DimPlot(combined, group.by = "sample_id")
+DefaultAssay(combined) <- "RNA"
+combined <- JoinLayers(combined)   # merges SC006 + SC008 layers into one
 
+markers_com <- FindAllMarkers(
+  combined,
+  only.pos       = TRUE,
+  min.pct        = 0.25,
+  logfc.threshold = 0.25
+)
 
-
-#####single R###################################
-
-sce <- as.SingleCellExperiment(combined, assay = "RNA")
-pred <- SingleR(test = sce, ref = ref, labels = ref$label.main, clusters = combined$seurat_clusters)
-combined$SingleR_labels <- pred$labels[combined$seurat_clusters]
-DimPlot(combined, group.by = "SingleR_labels", label = TRUE)
-
-
-
-##########################################
-
-
-
-
-
-
-
+# Extract top 50 significant markers per cluster
+top50 <- markers_com %>%
+  filter(p_val_adj < 0.05, avg_log2FC > 0.5) %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 50)
 
 
+# ============================================================
+# 9. MANUAL CELL TYPE ANNOTATION
+# ============================================================
+# Clusters manually annotated based on marker genes and SingleR results
+
+combined$cell_type <- dplyr::recode(
+  as.character(combined$seurat_clusters),
+  "0" = "Endothelial_General",
+  "1" = "Macrophages",
+  "2" = "Vascular_Smooth_Muscle_Cells",
+  "3" = "Endothelial_EndoEMT",
+  "4" = "Mitochondrial_Contaminated_Cells",
+  "5" = "Macrophages_Foamy",
+  "6" = "Unknown_Proliferating_Cells"
+)
+
+# UMAP split by sample with manual cell type labels
+DimPlot(combined,
+        split.by = "sample_id",
+        group.by = "cell_type",
+        repel    = TRUE) +
+  ggtitle("Cell Types per Sample")
+
+# Combined UMAP with cell type labels
+DimPlot(combined,
+        group.by = "cell_type",
+        repel    = TRUE) +
+  ggtitle("Cell Types — Combined")
 
 
+# ============================================================
+# 10. REMOVE LOW-QUALITY CLUSTERS
+# ============================================================
+# Remove mitochondrial contaminated cells before downstream analysis
 
+combined_clean <- subset(combined,
+                         subset = cell_type != "Mitochondrial_Contaminated_Cells")
+
+# Verify cell counts per type after removal
+table(combined_clean$cell_type)
+
+
+# ============================================================
+# 11. CELL TYPE COMPOSITION PLOT
+# ============================================================
+# Compare the number of cells per cell type across samples
+
+library(ggplot2)
 library(dplyr)
-library(tidyr)
-library(tibble)
-# below is the marker genes from integrated cell-atlas of atherosclerotic plaques
 
-marker_list <- list(
-  
-  # ---------------- Structural ----------------
-  Fibroblast = c("LUM","DCN","COL1A1","COL1A2","FBLN1","THY1","C3","C7"),
-  Fibromyocyte = c("FN1","LUM","TNFRSF11B","ACTA2","TCF21"),
-  Smooth_muscle_cell = c("ACTA2","MYH11","MYL9","TPM2","CALD1","TAGLN","TNFRSF11B","LUM","APOE","APOC1","AGT","NOTCH3","PDGFRB","MFAP4"),
-  
-  Endothelial_general = c("PECAM1","VWF","FABP4","CLDN5","IFI27","ECSCR","DYSF",
-                          "CD34","COL4A1","COL4A2","SPARCL1","PLVAP","MPZL2","SULF1","EDN1"),
-  
-  Endothelial_proangiogenic = c("ACKR1","AQP1","FABP4","CXCL12"),
-  Endothelial_EndoMT = c("COL1A2","FN1"),
-  
-  # ---------------- Myeloid ----------------
-  Neutrophil = c("NAMPT","IFITM2","G0S2","CXCL8","NEAT1","SRGN",
-                 "AQP9","SOD2","FCGR3B","IVNS1ABP"),
-  
-  Monocyte = c("FCN1","S100A8","S100A9","S100A12","VCAN","CD52","LYZ","CTSS"),
-  
-  Mast_cell = c("TPSAB1","TPSB2","KIT","HDC","CMA1"),
-  
-  DC_general = c("CLEC10A","FCER1A","CD1C","HLA-DRA","HLA-DRB1"),
-  DC_cDC1 = c("CLEC9A","IRF8","SNX3"),
-  DC_cDC2 = c("CD1C","CLEC10A","FCER1A"),
-  DC_pDC = c("GTF2A","GZMB","TLR7","TLR9","NRP1","SCAMP5","CLEC4C","IRF7"),
-  
-  Macrophage_general = c("C1QA","C1QB","C1QC","CD74","CXCL8","AIF1","CD14",
-                         "CD68","ITGAM","CSF1R","HLA-DRA","LGALS3"),
-  
-  Macrophage_foamy = c("TREM2","MARCO","FABP4","FABP5","CD36"),
-  
-  Macrophage_inflammatory = c("S100A8","IL1B","S100A9","IRF7","IFITM3","ISG15","IFIT2"),
-  
-  Macrophage_PLIN2_TREM1 = c("PLIN2","TREM1",
-                             "CXCL1","CXCL2","CXCL3","CXCL8",
-                             "CCL2","CCL7","CCL20",
-                             "IL1B","TNF","CEBPB"),
-  
-  Macrophage_HMOX1 = c("HMOX1","ALOX5","GPNMB","LIPA","NPC2","PRDX1","SLC40A1",
-                       "NUPR1","APOE","LAMP2","CTSB","SELENOP","LGMN","LRP1","CTSD","FTL"),
-  
-  # ---------------- Lymphoid ----------------
-  B_cell = c("CD79A","CD79B","MS4A1","IGKC","CD22","FCER2"),
-  
-  Plasma_cell = c("IGKC","IGHM","IGHA1","IGLC2","IGLC3","JCHAIN"),
-  
-  NK_cell = c("NKG7","XCL1","CTSW","XCL2","CD160","FCGR3A","PRF1","GNLY"),
-  
-  T_cell_general = c("CD2","TRAC","CD69","CD3E","CD3D","CD4","CD8A","CD8B","EOMES","LAG3"),
-  
-  T_cell_CD4 = c("CD4","IFI1","IL7R","ANXA1","BATF","TNFRSF4","TNFRSF18"),
-  
-  T_cell_CD8 = c("CCL4L2","CRTAM","GZMK","CD8A","CCL4","GZMH")
-)
-############# markers from the paper-decoding....#########
+cell_counts <- combined_clean@meta.data %>%
+  group_by(sample_id, cell_type) %>%
+  summarise(n_cells = n(), .groups = "drop")
 
-marker_list2 <- list(
-  Macrophages = c("CD14", "CD68", "AIF1", "LST1"),
-  
-  Endothelial_Cells = c("CLU", "VWF", "EDN1", "ECSCR", "SPARCL1", "PECAM1", "CALD1", "MGP"),
-  
-  ACKR1_Positive = c("ACKR1"),
-  
-  Natural_KT_Cells = c("NKG7", "XCL1", "CTSW", "CD69"),
-  
-  T_Cells = c("TRAC", "CD2"),
-  
-  Vascular_Smooth_Muscle_Cells = c("ACTA2", "TAGLN", "MYL9", "SPARCL1", "CALD1", "MGP", "DCN"),
-  
-  Neutrophils = c("S100A8")
+ggplot(cell_counts, aes(x = cell_type, y = n_cells, fill = sample_id)) +
+  geom_bar(stat = "identity", position = "dodge",
+           width = 0.7, color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = c(
+    "SC006" = "#4E79A7",
+    "SC008" = "#F28E2B"
+  )) +
+  labs(
+    title = "Cell Type Composition per Sample",
+    x     = NULL,
+    y     = "Number of Cells",
+    fill  = "Sample"
+  ) +
+  theme_classic(base_size = 10) +
+  theme(
+    plot.title      = element_text(face = "bold", size = 11, hjust = 0.5, family = "Helvetica"),
+    axis.text.x     = element_text(angle = 45, hjust = 1, size = 8, family = "Helvetica"),
+    axis.text.y     = element_text(size = 8, family = "Helvetica"),
+    axis.title.y    = element_text(size = 9, family = "Helvetica"),
+    legend.title    = element_text(size = 9, face = "bold", family = "Helvetica"),
+    legend.text     = element_text(size = 8, family = "Helvetica"),
+    legend.position = "top",
+    panel.border    = element_rect(color = "grey80", fill = NA, linewidth = 0.5)
+  )
+
+
+# ============================================================
+# 12. MARKER GENE DOT PLOT
+# ============================================================
+# Dot plot showing expression of known plaque marker genes
+# Dot size = % cells expressing the gene
+# Dot color = average expression level
+
+genes_to_plot <- c(
+  # Foamy Macrophages (Cluster 5)
+  "CD68", "CHIT1", "CD36", "CD74", "LGALS3", "CTSD", "APOE", "MMP9",
+  # Endothelial — General (Cluster 0)
+  "VWF", "PECAM1", "ECSCR", "MGP",
+  # Endothelial — EndoEMT (Cluster 3)
+  "COL1A2", "COL1A1", "FN1",
+  # Vascular Smooth Muscle Cells (Cluster 2)
+  "ACTA2", "MYL9", "TAGLN"
 )
 
+genes_to_plot <- unique(genes_to_plot)   # remove any duplicates
 
-######macrophage markers from-Macrophage subsets in atherosclerosis as defined by single‐cell technologies########
+Idents(combined_clean)        <- "cell_type"
+DefaultAssay(combined_clean)  <- "RNA"
 
-resident_genes <- c("LYVE1", "CX3CR1", "FOLR2", "MRC1", "F13A1", "CBR2", "SEPP1", "PF4", "GAS6")
+DotPlot(combined_clean,
+        features = genes_to_plot,
+        group.by = "cell_type",
+        dot.scale = 6) +
+  
+  scale_color_gradient2(
+    low      = "#4E79A7",
+    mid      = "white",
+    high     = "#E15759",
+    midpoint = 0
+  ) +
+  
+  labs(
+    title = "Marker Gene Expression Across Cell Types",
+    x     = NULL,
+    y     = NULL,
+    color = "Avg Expression",
+    size  = "% Expressed"
+  ) +
+  
+  theme_classic(base_size = 10) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 11, hjust = 0.5, family = "Helvetica"),
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 8, family = "Helvetica", face = "italic"),
+    axis.text.y      = element_text(size = 8, family = "Helvetica"),
+    legend.title     = element_text(size = 8, face = "bold", family = "Helvetica"),
+    legend.text      = element_text(size = 7, family = "Helvetica"),
+    legend.position  = "right",
+    panel.border     = element_rect(color = "grey80", fill = NA, linewidth = 0.5),
+    panel.grid.major = element_line(color = "grey95", linewidth = 0.3)
+  ) +
+  
+  guides(
+    color = guide_colorbar(barwidth = 0.8, barheight = 4),
+    size  = guide_legend(override.aes = list(color = "grey40"))
+  )
 
-inflammatory_genes <- c("TNF", "NLRP3", "IL1B", "EGR1", "TLR2", "IER3", "CEBPB",
-                        "CXCL2", "CCL2", "CCL3", "CCL4", "CCL5", "NFKBIA")
 
-trem2_genes <- c("TREM2", "CD9", "LGALS3", "CTSB", "SPP1")
+# ============================================================
+# 13. CELL-CELL COMMUNICATION ANALYSIS — CellChat
+# ============================================================
+# CellChat infers intercellular communication networks from
+# ligand-receptor interaction databases
+# Analysis run separately per sample for comparison
 
+# --- Split cleaned object by sample ---
+Idents(combined_clean) <- "sample_id"
 
+seurat_SC006 <- subset(combined_clean, idents = "SC006")
+seurat_SC008 <- subset(combined_clean, idents = "SC008")
 
-resident_genes %in% rownames(SC006)
-inflammatory_genes %in% rownames(SC006)
-trem2_genes %in% rownames(SC006)
+seurat_list <- list(
+  SC006 = seurat_SC006,
+  SC008 = seurat_SC008
+)
 
+# --- CellChat wrapper function ---
+# Runs full CellChat pipeline for a single Seurat object
+run_cellchat <- function(seurat_obj) {
+  
+  library(CellChat)
+  
+  DefaultAssay(seurat_obj) <- "RNA"
+  seurat_obj$cell_type     <- as.factor(seurat_obj$cell_type)
+  
+  # Create CellChat object grouped by cell type
+  cellchat <- createCellChat(
+    object   = seurat_obj,
+    group.by = "cell_type"
+  )
+  
+  # Use human ligand-receptor database
+  CellChatDB        <- CellChatDB.human
+  cellchat@DB       <- CellChatDB
+  
+  # Preprocessing: identify overexpressed genes and interactions
+  cellchat <- subsetData(cellchat)
+  cellchat <- identifyOverExpressedGenes(cellchat, do.fast = FALSE)
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  
+  # Compute communication probabilities
+  cellchat <- computeCommunProb(cellchat)
+  cellchat <- filterCommunication(cellchat, min.cells = 10)   # remove low-confidence interactions
+  
+  # Summarise at the signalling pathway level
+  cellchat <- computeCommunProbPathway(cellchat)
+  cellchat <- aggregateNet(cellchat)
+  
+  return(cellchat)
+}
 
-DotPlot(
-  SC006,
-  features = c(resident_genes, inflammatory_genes, trem2_genes)
-) + RotatedAxis()
+# --- Run CellChat for each sample ---
+cellchat_list <- lapply(seurat_list, run_cellchat)
