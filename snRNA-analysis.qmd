@@ -167,11 +167,7 @@ DimPlot(combined,
         group.by = "cell_type", # color by cluster
         repel = TRUE) +
   ggtitle("Clusters per Sample")
-
-```
-
-## Subclustering
-
-```{r}
-
+saveRDS(combined,file="integrated_samples.rds")
+file.exists("integrated_samples.rds")  # check it exists
+file.info("integrated_samples.rds")$size  # check file size looks reasonable
 ```
