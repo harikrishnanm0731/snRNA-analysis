@@ -2,6 +2,6 @@
 *
 
 # Except these
-!script.R
+!snRNA-analysis
 !README.md
 !.gitignore
