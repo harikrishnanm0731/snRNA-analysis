@@ -1,0 +1,52 @@
+---
+title: "NMF"
+author: "harikrishnanm"
+format: html
+editor: visual
+---
+
+## install and load libraries
+
+```{r}
+#remotes::install_github("FertigLab/CoGAPS")
+library(CoGAPS)
+```
+
+## To ensure CoGAPS is working properly, first load in the simulated toy data for a test run #optional
+
+```{r}
+#download(testdata from the gihub repo)
+modsimdata
+head(modsimdata, c(5L, 5L))
+dim(modsimdata)
+```
+
+## set parameters#optional step
+
+```{r}
+# create new parameters object
+params <- CogapsParams(nPatterns = 7)
+# Get current value
+getParam(params, "nPatterns")
+
+params <- setParam(params, "nPatterns", 8)     # start here for plaque
+params <- setParam(params, "nIterations", 50000)
+params <- setParam(params, "seed", 42)          # for reproducibility
+params <- setParam(params, "sparseOptimization", TRUE)  # good for snRNA-seq
+```
+
+## Run CoGAPS on the ModSim data #optional step
+
+```{r}
+cogapsresult <- CoGAPS(modsimdata, params, outputFrequency = 10000)
+```
+
+## Running coGAPS on snRNA-seq data 
+
+## 1. loading the rds data
+
+```{r}
+getwd()
+cad_data <- readRDS("integrated_samples.rds")
+cad_data
+```
