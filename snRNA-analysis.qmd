@@ -1,0 +1,177 @@
+---
+title: "Untitled"
+author: "harikrishnanm"
+format: html
+editor: visual
+---
+
+# SINGLE CELL ANALYSIS
+
+## loading libraries
+
+```{r}
+library(Seurat)
+library(patchwork)
+library(dplyr)
+library(harmony)
+library(ggplot2)
+library(SingleR)
+library(celldex)
+library(metap)
+library(SingleCellExperiment)
+library(CellChat)
+
+```
+
+## loading the data
+
+```{r}
+getwd()
+setwd("~/snrna-project")  
+base_path <- "SO_14534/CellRanger_Output/"
+data_SC006 <- Read10X(data.dir = file.path(base_path, "SC006", "sample_filtered_feature_bc_matrix"))
+data_SC008 <- Read10X(data.dir = file.path(base_path, "SC008", "sample_filtered_feature_bc_matrix"))
+SC008 <- CreateSeuratObject(counts = data_SC008, project = "SC008", min.cells = 1, min.features = 100) 
+SC006 <- CreateSeuratObject(counts = data_SC006, project = "SC006", min.cells = 1, min.features = 100) 
+```
+
+## Quality check
+
+```{r}
+
+SC006[["percent.mt"]] <- PercentageFeatureSet(SC006, pattern = "^MT-|^mt-")
+SC008[["percent.mt"]] <- PercentageFeatureSet(SC008, pattern = "^MT-|^mt-")
+
+# QC Plots
+VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# Filtering
+SC006 <- subset(SC006, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 5)
+SC008 <- subset(SC008, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 1)
+
+#QC plots  after filtering
+VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+## feature scaling
+
+```{r}
+
+SC006 <- NormalizeData(SC006, normalization.method = "LogNormalize", scale.factor = 10000)
+SC006 <- FindVariableFeatures(SC006, selection.method = "vst", nfeatures = 2000)
+
+SC008 <- NormalizeData(SC008, normalization.method = "LogNormalize", scale.factor = 10000)
+SC008 <- FindVariableFeatures(SC008, selection.method = "vst", nfeatures = 2000)
+
+```
+
+## CCA integration with LogNormalize
+
+```{r}
+SC006$sample_id <- "SC006"
+SC008$sample_id <- "SC008"
+
+seurat_list <- list(SC006, SC008)
+
+anchors <- FindIntegrationAnchors(
+  object.list = seurat_list,
+  normalization.method = "LogNormalize",  
+  anchor.features = 2000,
+  reduction = "cca"                        
+)
+
+combined <- IntegrateData(
+  anchorset = anchors,
+  normalization.method = "LogNormalize"   
+)
+
+```
+
+## scaling and dimensionality reduction
+
+```{r}
+DefaultAssay(combined) <- "integrated"
+
+combined <- ScaleData(combined, verbose = FALSE)   # REQUIRED for LogNormalize
+combined <- RunPCA(combined, verbose = FALSE)
+ElbowPlot(combined, ndims = 50)
+
+combined <- FindNeighbors(combined, dims = 1:20)
+combined <- FindClusters(combined, resolution = 0.3)
+combined <- RunUMAP(combined, dims = 1:20)
+
+```
+
+## visualization
+
+```{r}
+
+# Visualization
+DimPlot(combined, group.by = "sample_id")
+DimPlot(combined, label = TRUE)
+DimPlot(combined, 
+        split.by = "sample_id",      # separate panels per sample
+        group.by = "seurat_clusters", # color by cluster
+        label = TRUE, 
+        repel = TRUE) +
+  ggtitle("Clusters per Sample")
+
+```
+
+## Marker identification
+
+```{r}
+DefaultAssay(combined) <- "RNA"
+combined <- JoinLayers(combined)  # joins data.SC006 + data.SC008 into one layer
+markers_com <- FindAllMarkers(
+  combined,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+
+top50 <- markers_com %>%
+  filter(p_val_adj < 0.05, avg_log2FC > 0.5) %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 50)
+
+```
+
+## Assigning cell type names
+
+```{r}
+
+combined$cell_type <- dplyr::recode(
+  as.character(combined$seurat_clusters),
+  "0" = "Endothelial_General",
+  "1" = "Macrophages",
+  "2" = "Vascular_Smooth_Muscle_Cells",
+  "3" = "Endothelial_EndoEMT",
+  "4" = "Mitochondrial_Contaminated_Cells",
+  "5" = "Macrophages_Foamy",
+  "6" = "Unknown_Proliferating_Cells"
+)
+
+
+
+DimPlot(combined, 
+        split.by = "sample_id",      # separate panels per sample
+        group.by = "cell_type", # color by cluster
+        repel = TRUE) +
+  ggtitle("Clusters per Sample")
+
+
+DimPlot(combined, 
+        group.by = "cell_type", # color by cluster
+        repel = TRUE) +
+  ggtitle("Clusters per Sample")
+
+```
+
+## Subclustering
+
+```{r}
+
+```
