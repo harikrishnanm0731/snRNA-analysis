@@ -41,7 +41,7 @@ params <- setParam(params, "sparseOptimization", TRUE)  # good for snRNA-seq
 cogapsresult <- CoGAPS(modsimdata, params, outputFrequency = 10000)
 ```
 
-## Running coGAPS on snRNA-seq data 
+## Running coGAPS on snRNA-seq data
 
 ## 1. loading the rds data
 
@@ -49,4 +49,113 @@ cogapsresult <- CoGAPS(modsimdata, params, outputFrequency = 10000)
 getwd()
 cad_data <- readRDS("integrated_samples.rds")
 cad_data
+```
+
+## 2.extracting counts and setting params
+
+```{r}
+norm_counts <- as.matrix(LayerData(cad_data, assay = "RNA", layer = "data"))
+# Verify names are preserved after conversion
+head(rownames(norm_counts))
+head(colnames(norm_counts))
+dim(norm_counts)
+
+```
+
+## 3. setting params
+
+```{r}
+params <- CogapsParams(
+  nIterations        = 50000,
+  seed               = 42,
+  nPatterns          = 10,       # two samples, plaque cell diversity; try 8-12
+  sparseOptimization = TRUE,
+  distributed        = "genome-wide"
+)
+
+params <- setDistributedParams(params, nSets = 10)
+
+
+```
+
+## 4. Running coGAPS
+
+```{r}
+startTime <- Sys.time()
+cad_cogaps_result <- CoGAPS(norm_counts, params)
+endTime <- Sys.time()
+
+print(endTime - startTime)
+
+# --- Save ---
+saveRDS(cad_cogaps_result, "cad_cogaps_result.Rds")
+```
+
+## analysing the cogaps result
+
+```{r}
+cogapsresult <- readRDS("cad_cogaps_result.Rds")
+cogapsresult
+```
+
+```{r}
+# make sure pattern matrix is in same order as the input data
+patterns_in_order <-t(cogapsresult@sampleFactors[colnames(cad_data),])
+# add CoGAPS patterns as an assay
+cad_data[["CoGAPS"]] <- CreateAssayObject(counts = patterns_in_order)
+```
+
+```{r}
+DefaultAssay(cad_data) <- "CoGAPS"
+pattern_names = rownames(cad_data@assays$CoGAPS)
+library(viridis)
+color_palette <- viridis(n=10)
+FeaturePlot(cad_data, pattern_names, cols=color_palette, reduction = "umap") & NoLegend()
+```
+
+```{r}
+FeaturePlot(cad_data,
+            features = rownames(cad_data[["CoGAPS"]]),
+            ncol = 4,
+            min.cutoff = "q10",
+            max.cutoff = "q90",   # <-- cuts off extreme high values
+            cols = c("lightgrey", "darkred"))
+```
+
+```{r}
+# Side by side: clusters + Pattern-1
+p1 <- DimPlot(cad_data, group.by = "seurat_clusters", label = TRUE)
+p2 <- FeaturePlot(cad_data, features = "Pattern-1", 
+                  min.cutoff = "q10", max.cutoff = "q90",
+                  cols = c("lightgrey", "darkred"))
+p1 + p2
+```
+
+```{r}
+DefaultAssay(cad_data) <- "CoGAPS"
+
+# Mean pattern score per cluster
+pattern_by_cluster <- AverageExpression(cad_data, 
+                                         assay = "CoGAPS",
+                                         group.by = "seurat_clusters")$CoGAPS
+
+# Heatmap
+pheatmap::pheatmap(pattern_by_cluster,
+                   scale = "row",
+                   cluster_rows = FALSE,
+                   color = colorRampPalette(c("lightgrey", "darkred"))(50),
+                   main = "Mean CoGAPS pattern score per cluster")
+```
+
+```{r}
+library(CoGAPS)
+
+# Get top 10 genes per pattern from the Amplitude matrix
+amp <- cad_cogaps_result@featureLoadings  # genes × 7
+
+top_genes_per_pattern <- apply(amp, 2, function(x) {
+  names(sort(x, decreasing = TRUE))[1:20]
+})
+
+print(top_genes_per_pattern)
 ```
