@@ -1,0 +1,93 @@
+---
+title: "individual_analysis"
+format: html
+editor: visual
+---
+
+# samplewise-analysis
+
+## load the libraries and objects
+
+```{r}
+library(Seurat)
+```
+
+```{r}
+
+####set the path###############
+base_path <- "SO_14534/CellRanger_Output/"
+
+##########load datasets ###########
+data_SC006 <- Read10X(data.dir = file.path(base_path, "SC006", "sample_filtered_feature_bc_matrix")) 
+data_SC008 <- Read10X(data.dir = file.path(base_path, "SC008", "sample_filtered_feature_bc_matrix")) 
+
+
+
+###########Create Seurat Objects####################################
+SC008 <- CreateSeuratObject(counts = data_SC008, project = "SC008", min.cells = 1, min.features = 100) 
+SC006 <- CreateSeuratObject(counts = data_SC006, project = "SC006", min.cells = 1, min.features = 100) 
+
+```
+
+## basic qc
+
+```{r}
+# Metadata & QC
+SC006$sample_id <- "SC006"
+SC008$sample_id <- "SC008"
+
+SC006[["percent.mt"]] <- PercentageFeatureSet(SC006, pattern = "^MT-|^mt-")
+SC008[["percent.mt"]] <- PercentageFeatureSet(SC008, pattern = "^MT-|^mt-")
+
+# QC Plots
+VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# Filtering
+SC006_filt<- subset(SC006, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 2)
+SC008_filt <- subset(SC008, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 1)
+
+dim(SC006_filt)
+dim(SC008_filt)
+
+#QC plots  after filtering
+VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+```{r}
+# ── Normalization ──────────────────────────────────────────
+SC006_filt <- SCTransform(SC006_filt, vst.flavor = "v2",
+                           vars.to.regress = "percent.mt", verbose = TRUE)
+SC008_filt <- SCTransform(SC008_filt, vst.flavor = "v2",
+                           vars.to.regress = "percent.mt", verbose = TRUE)
+
+# ── Dimensionality Reduction ───────────────────────────────
+# Note: assay automatically set to "SCT" after SCTransform
+SC006_filt <- RunPCA(SC006_filt, verbose = FALSE)
+SC008_filt <- RunPCA(SC008_filt, verbose = FALSE)
+
+# Check elbow plot to choose dims
+ElbowPlot(SC006_filt, ndims = 40)
+ElbowPlot(SC008_filt, ndims = 40)
+```
+
+## sc008
+
+```{r}
+
+# ── Clustering & UMAP ──────────────────────────────────────
+SC006_filt <- FindNeighbors(SC006_filt, dims = 1:15)
+SC006_filt <- FindClusters(SC006_filt,  resolution = 0.8)
+SC006_filt <- RunUMAP(SC006_filt,       dims = 1:15)
+
+SC008_filt <- FindNeighbors(SC008_filt, dims = 1:20)
+SC008_filt <- FindClusters(SC008_filt,  resolution = 0.8)
+SC008_filt <- RunUMAP(SC008_filt,       dims = 1:20)
+
+# ── Visualize ──────────────────────────────────────────────
+DimPlot(SC006_filt, label = TRUE) 
+DimPlot(SC008_filt, label = TRUE) 
+```
+
+## 

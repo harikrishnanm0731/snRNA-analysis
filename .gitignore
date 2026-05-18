@@ -1,7 +1,9 @@
 # Ignore everything
 *
+
 # Except these
 !README.md
 !.gitignore
 !snRNA-analysis.qmd
 !NMF.qmd
+!sample-wise-analysis.qmd
