@@ -4,90 +4,353 @@ format: html
 editor: visual
 ---
 
-# samplewise-analysis
+## Sample-wise Analysis
 
-## load the libraries and objects
+```{r}
+# ── scDblFinder ────────────────────────────────────────────────────
+renv::install("bioc::scDblFinder")
+
+# ── celda (contains DecontX) ───────────────────────────────────────
+renv::install("bioc::celda")
+
+# ── Supporting Bioc dependencies ───────────────────────────────────
+renv::install(c(
+  "bioc::SingleCellExperiment",
+  "bioc::BiocParallel",
+  "bioc::scran",
+  "bioc::scater"
+))
+
+# ── restfulr ───────────────────────────────────────────────────────
+renv::install("bioc::restfulr")
+renv::install("github::chris-mcginnis-ucsf/DoubletFinder")
+```
+
+### Load Libraries
 
 ```{r}
 library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(scDblFinder)
+library(celda)          # DecontX
+library(SingleCellExperiment)
+library(BiocParallel)
 ```
 
-```{r}
+------------------------------------------------------------------------
 
-####set the path###############
+### Step 1 — Load Matrices
+
+> 
+
+```{r}
 base_path <- "SO_14534/CellRanger_Output/"
 
-##########load datasets ###########
-data_SC006 <- Read10X(data.dir = file.path(base_path, "SC006", "sample_filtered_feature_bc_matrix")) 
-data_SC008 <- Read10X(data.dir = file.path(base_path, "SC008", "sample_filtered_feature_bc_matrix")) 
+# Raw (unfiltered) matrices — NOT sample_filtered_feature_bc_matrix
+data_SC006_filt <- Read10X(
+  data.dir = file.path(base_path, "SC006", "sample_filtered_feature_bc_matrix")
+)
 
+data_SC008_filt <- Read10X(
+  data.dir = file.path(base_path, "SC008", "sample_filtered_feature_bc_matrix")
+)
 
+# Create Seurat objects with minimal pre-filtering
+# min.cells = 1, min.features = 100 keeps nearly everything including near-empty droplets
+SC006 <- CreateSeuratObject(counts = data_SC006_filt, project = "SC006",
+                             min.cells = 1, min.features = 100)
+SC008 <- CreateSeuratObject(counts = data_SC008_filt, project = "SC008",
+                             min.cells = 1, min.features = 100)
 
-###########Create Seurat Objects####################################
-SC008 <- CreateSeuratObject(counts = data_SC008, project = "SC008", min.cells = 1, min.features = 100) 
-SC006 <- CreateSeuratObject(counts = data_SC006, project = "SC006", min.cells = 1, min.features = 100) 
-
-```
-
-## basic qc
-
-```{r}
-# Metadata & QC
 SC006$sample_id <- "SC006"
 SC008$sample_id <- "SC008"
 
-SC006[["percent.mt"]] <- PercentageFeatureSet(SC006, pattern = "^MT-|^mt-")
-SC008[["percent.mt"]] <- PercentageFeatureSet(SC008, pattern = "^MT-|^mt-")
+cat("SC006 raw dims:", dim(SC006), "\n")
+cat("SC008 raw dims:", dim(SC008), "\n")
+```
 
-# QC Plots
-VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
-VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+------------------------------------------------------------------------
 
-# Filtering
-SC006_filt<- subset(SC006, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 2)
-SC008_filt <- subset(SC008, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 1)
+### Step 2 — First-pass SCTransform + Clustering (Pre-QC)
 
-dim(SC006_filt)
-dim(SC008_filt)
+> Clustering is done BEFORE any QC filtering so that scDblFinder has cluster context for its cluster-based doublet simulation mode.
 
-#QC plots  after filtering
-VlnPlot(SC006, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
-VlnPlot(SC008, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```{r}
+# ── SC006 ─────────────────────────────────────────────────────────
+SC006 <- SCTransform(SC006, vst.flavor = "v2", verbose = TRUE)
+SC006 <- RunPCA(SC006, verbose = FALSE)
+ElbowPlot(SC006, ndims = 40)
+
+# ── SC008 ─────────────────────────────────────────────────────────
+SC008 <- SCTransform(SC008, vst.flavor = "v2", verbose = TRUE)
+SC008 <- RunPCA(SC008, verbose = FALSE)
+ElbowPlot(SC008, ndims = 40)
 ```
 
 ```{r}
-# ── Normalization ──────────────────────────────────────────
-SC006_filt <- SCTransform(SC006_filt, vst.flavor = "v2",
-                           vars.to.regress = "percent.mt", verbose = TRUE)
-SC008_filt <- SCTransform(SC008_filt, vst.flavor = "v2",
-                           vars.to.regress = "percent.mt", verbose = TRUE)
+# ── SC006 — set dims based on elbow ───────────────────────────────
+SC006 <- FindNeighbors(SC006, dims = 1:30, verbose = FALSE)
+SC006 <- FindClusters(SC006, resolution = 0.8, verbose = FALSE)
+SC006 <- RunUMAP(SC006, dims = 1:30, verbose = FALSE)
 
-# ── Dimensionality Reduction ───────────────────────────────
-# Note: assay automatically set to "SCT" after SCTransform
-SC006_filt <- RunPCA(SC006_filt, verbose = FALSE)
-SC008_filt <- RunPCA(SC008_filt, verbose = FALSE)
+# ── SC008 — set dims based on elbow ───────────────────────────────
+SC008 <- FindNeighbors(SC008, dims = 1:30, verbose = FALSE)
+SC008 <- FindClusters(SC008, resolution = 0.8, verbose = FALSE)
+SC008 <- RunUMAP(SC008, dims = 1:30, verbose = FALSE)
 
-# Check elbow plot to choose dims
-ElbowPlot(SC006_filt, ndims = 40)
-ElbowPlot(SC008_filt, ndims = 40)
+# ── Visualize ─────────────────────────────────────────────────────
+DimPlot(SC006, label = TRUE) + ggtitle("SC006 — Pre-QC First Pass")
+DimPlot(SC008, label = TRUE) + ggtitle("SC008 — Pre-QC First Pass")
 ```
 
-## sc008
+### Step 3 — Doublet Removal with scDblFinder (3 Consensus Iterations)
+
+> Artificial doublets + real cells are embedded in a kNN graph. Doublet density per cell is estimated from artificial-doublet neighbourhood composition.
 
 ```{r}
+# ── SC006 ─────────────────────────────────────────────────────────
+sce_SC006 <- as.SingleCellExperiment(SC006)
 
-# ── Clustering & UMAP ──────────────────────────────────────
-SC006_filt <- FindNeighbors(SC006_filt, dims = 1:15)
-SC006_filt <- FindClusters(SC006_filt,  resolution = 0.8)
-SC006_filt <- RunUMAP(SC006_filt,       dims = 1:15)
+doublet_calls_SC006 <- lapply(1:3, function(i) {
+  set.seed(42 + i)
+  res <- scDblFinder(sce_SC006, dbr.sd = 1)
+  as.character(res$scDblFinder.class)  # convert factor to character
+})
 
-SC008_filt <- FindNeighbors(SC008_filt, dims = 1:20)
-SC008_filt <- FindClusters(SC008_filt,  resolution = 0.8)
-SC008_filt <- RunUMAP(SC008_filt,       dims = 1:20)
+doublet_matrix_SC006    <- do.call(cbind, doublet_calls_SC006)
+consensus_doublet_SC006 <- rowSums(doublet_matrix_SC006 == "doublet") >= 2
+singlets_SC006          <- colnames(sce_SC006)[!consensus_doublet_SC006]
 
-# ── Visualize ──────────────────────────────────────────────
-DimPlot(SC006_filt, label = TRUE) 
-DimPlot(SC008_filt, label = TRUE) 
+cat("SC006 doublets per iteration:\n")
+cat("  iter 1:", sum(doublet_calls_SC006[[1]] == "doublet"), "\n")
+cat("  iter 2:", sum(doublet_calls_SC006[[2]] == "doublet"), "\n")
+cat("  iter 3:", sum(doublet_calls_SC006[[3]] == "doublet"), "\n")
+cat("SC006 consensus doublets (>=2/3):", sum(consensus_doublet_SC006), "\n")
+cat("SC006 singlets retained:         ", sum(!consensus_doublet_SC006), "\n")
+
+# ── SC008 ─────────────────────────────────────────────────────────
+sce_SC008 <- as.SingleCellExperiment(SC008)
+
+doublet_calls_SC008 <- lapply(1:3, function(i) {
+  set.seed(42 + i)
+  res <- scDblFinder(sce_SC008, dbr.sd = 1)
+  as.character(res$scDblFinder.class)  # convert factor to character
+})
+
+doublet_matrix_SC008    <- do.call(cbind, doublet_calls_SC008)
+consensus_doublet_SC008 <- rowSums(doublet_matrix_SC008 == "doublet") >= 2
+singlets_SC008          <- colnames(sce_SC008)[!consensus_doublet_SC008]
+
+cat("SC008 doublets per iteration:\n")
+cat("  iter 1:", sum(doublet_calls_SC008[[1]] == "doublet"), "\n")
+cat("  iter 2:", sum(doublet_calls_SC008[[2]] == "doublet"), "\n")
+cat("  iter 3:", sum(doublet_calls_SC008[[3]] == "doublet"), "\n")
+cat("SC008 consensus doublets (>=2/3):", sum(consensus_doublet_SC008), "\n")
+cat("SC008 singlets retained:         ", sum(!consensus_doublet_SC008), "\n")
+
+# ── Subset to singlets ────────────────────────────────────────────
+SC006_singlets <- subset(SC006, cells = singlets_SC006)
+SC008_singlets <- subset(SC008, cells = singlets_SC008)
+
+cat("SC006 after doublet removal:", ncol(SC006_singlets), "cells\n")
+cat("SC008 after doublet removal:", ncol(SC008_singlets), "cells\n")
 ```
 
-## 
+## DoubletFinder
+
+```{r}
+# # ── SC006 ─────────────────────────────────────────────────────────
+# # Step 1 — pK identification (no ground truth)
+# sweep_res_SC006 <- paramSweep(SC006, PCs = 1:30, sct = TRUE)
+# sweep_stats_SC006 <- summarizeSweep(sweep_res_SC006, GT = FALSE)
+# bcmvn_SC006 <- find.pK(sweep_stats_SC006)
+# 
+# # Step 2 — optimal pK
+# optimal_pK_SC006 <- as.numeric(as.character(
+#   bcmvn_SC006$pK[which.max(bcmvn_SC006$BCmetric)]
+# ))
+# cat("SC006 optimal pK:", optimal_pK_SC006, "\n")
+# 
+# # Step 3 — homotypic doublet proportion estimate
+# annotations_SC006 <- SC006@meta.data$seurat_clusters
+# homotypic_prop_SC006 <- modelHomotypic(annotations_SC006)
+# nExp_SC006 <- round(0.0273 * ncol(SC006) * (1 - homotypic_prop_SC006))
+# cat("SC006 expected doublets:", nExp_SC006, "\n")
+# 
+# # Step 4 — run DoubletFinder
+# SC006 <- doubletFinder(SC006, PCs = 1:30, pN = 0.23,
+#                               pK = optimal_pK_SC006,
+#                               nExp = nExp_SC006, reuse.pANN = NULL,
+#                               sct = TRUE)
+# 
+# # Check results
+# # Column name is dynamic — find it
+# df_col_SC006 <- grep("DF.classifications", colnames(SC006@meta.data), value = TRUE)
+# table(SC006@meta.data[[df_col_SC006]])
+```
+
+------------------------------------------------------------------------
+
+### Step 4 — Ambient RNA Decontamination with DecontX
+
+> DecontX is run on doublet-filtered raw count matrices. Empty droplets in the raw matrix serve as the ambient RNA reference. Decontaminated counts are stored as a new assay ("decontXcounts") in each Seurat object.
+
+```{r}
+# Load raw matrices
+data_SC006_raw <- Read10X(
+  data.dir = file.path(base_path, "SC006", "sample_raw_feature_bc_matrix")
+)
+data_SC008_raw <- Read10X(
+  data.dir = file.path(base_path, "SC008", "sample_raw_feature_bc_matrix")
+)
+
+# Create raw Seurat objects
+# Recreate raw objects with minimal filter to remove zero-count barcodes
+SC006_raw <- CreateSeuratObject(counts = data_SC006_raw, project = "SC006",
+                                 min.cells = 0, min.features = 1)  # at least 1 gene
+SC008_raw <- CreateSeuratObject(counts = data_SC008_raw, project = "SC008",
+                                 min.cells = 0, min.features = 1)  # at least 1 gene
+
+cat("SC006 raw dims:", dim(SC006_raw), "\n")
+cat("SC008 raw dims:", dim(SC008_raw), "\n")
+
+# Convert to SCE
+sce_SC006_raw <- as.SingleCellExperiment(SC006_raw)
+sce_SC008_raw <- as.SingleCellExperiment(SC008_raw)
+
+# Run DecontX
+sce_SC006_decontX <- decontX(sce_SC006_raw)
+sce_SC008_decontX <- decontX(sce_SC008_raw)
+
+# Subset to singlet barcodes
+decontX_counts_SC006 <- round(decontXcounts(sce_SC006_decontX))
+decontX_counts_SC006 <- decontX_counts_SC006[, colnames(SC006_singlets)]
+
+decontX_counts_SC008 <- round(decontXcounts(sce_SC008_decontX))
+decontX_counts_SC008 <- decontX_counts_SC008[, colnames(SC008_singlets)]
+
+# Add to singlet Seurat objects
+SC006_singlets[["decontXcounts"]] <- CreateAssayObject(counts = decontX_counts_SC006)
+SC006_singlets$decontX_contamination <- sce_SC006_decontX$decontX_contamination[colnames(SC006_singlets)]
+
+SC008_singlets[["decontXcounts"]] <- CreateAssayObject(counts = decontX_counts_SC008)
+SC008_singlets$decontX_contamination <- sce_SC008_decontX$decontX_contamination[colnames(SC008_singlets)]
+
+cat("SC006 assays:", Assays(SC006_singlets), "\n")
+cat("SC008 assays:", Assays(SC008_singlets), "\n")
+```
+
+------------------------------------------------------------------------
+
+### Step 5 — Switch Default Assay to decontXcounts, Compute QC Metrics
+
+```{r}
+# Switch default assay to decontaminated counts before QC
+DefaultAssay(SC006_decontX) <- "decontXcounts"
+DefaultAssay(SC008_decontX) <- "decontXcounts"
+
+# Mitochondrial and hemoglobin percentages
+SC006_decontX[["percent.mt"]] <- PercentageFeatureSet(
+  SC006_decontX, pattern = "^MT-|^mt-", assay = "decontXcounts"
+)
+SC008_decontX[["percent.mt"]] <- PercentageFeatureSet(
+  SC008_decontX, pattern = "^MT-|^mt-", assay = "decontXcounts"
+)
+
+SC006_decontX[["percent.hb"]] <- PercentageFeatureSet(
+  SC006_decontX, pattern = "^HB[^(P)]", assay = "decontXcounts"
+)
+SC008_decontX[["percent.hb"]] <- PercentageFeatureSet(
+  SC008_decontX, pattern = "^HB[^(P)]", assay = "decontXcounts"
+)
+
+# Pre-filter violin plots
+VlnPlot(SC006_decontX,
+        features = c("nFeature_decontXcounts", "nCount_decontXcounts",
+                     "percent.mt", "percent.hb"),
+        ncol = 4, pt.size = 0) +
+  ggtitle("SC006 — Pre-filter QC (decontX counts)")
+
+VlnPlot(SC008_decontX,
+        features = c("nFeature_decontXcounts", "nCount_decontXcounts",
+                     "percent.mt", "percent.hb"),
+        ncol = 4, pt.size = 0) +
+  ggtitle("SC008 — Pre-filter QC (decontX counts)")
+```
+
+------------------------------------------------------------------------
+
+### Step 6 — Hard QC Filtering (Paper Thresholds)
+
+> Thresholds from the paper: - Unique genes: 200 – 4,000 - UMIs: 200 – 20,000 - % mitochondrial: \< 10% - % hemoglobin: \< 5% (removes contaminating erythrocytes)
+
+```{r}
+SC006_filt <- subset(
+  SC006_decontX,
+  subset = nFeature_decontXcounts >= 200 & nFeature_decontXcounts <= 4000 &
+           nCount_decontXcounts   >= 200 & nCount_decontXcounts   <= 20000 &
+           percent.mt < 5 &
+           percent.hb < 5
+)
+
+SC008_filt <- subset(
+  SC008_decontX,
+  subset = nFeature_decontXcounts >= 200 & nFeature_decontXcounts <= 4000 &
+           nCount_decontXcounts   >= 200 & nCount_decontXcounts   <= 20000 &
+           percent.mt < 10 &
+           percent.hb < 5
+)
+
+cat("SC006 final cell count:", ncol(SC006_filt), "\n")
+cat("SC008 final cell count:", ncol(SC008_filt), "\n")
+
+# Post-filter violin plots
+VlnPlot(SC006_filt,
+        features = c("nFeature_decontXcounts", "nCount_decontXcounts",
+                     "percent.mt", "percent.hb"),
+        ncol = 4, pt.size = 0) +
+  ggtitle("SC006 — Post-filter QC")
+
+VlnPlot(SC008_filt,
+        features = c("nFeature_decontXcounts", "nCount_decontXcounts",
+                     "percent.mt", "percent.hb"),
+        ncol = 4, pt.size = 0) +
+  ggtitle("SC008 — Post-filter QC")
+```
+
+------------------------------------------------------------------------
+
+### Step 7 — Final SCTransform + Dimensionality Reduction on Clean Cells
+
+```{r}
+finalize_seurat <- function(seu, dims = 1:20, resolution = 0.8) {
+  seu <- SCTransform(seu, vst.flavor = "v2",
+                     vars.to.regress = "percent.mt",
+                     assay = "decontXcounts",
+                     verbose = TRUE)
+  seu <- RunPCA(seu, verbose = FALSE)
+  ElbowPlot(seu, ndims = 40) |> print()
+  seu <- FindNeighbors(seu, dims = dims, verbose = FALSE)
+  seu <- FindClusters(seu, resolution = resolution, verbose = FALSE)
+  seu <- RunUMAP(seu, dims = dims, verbose = FALSE)
+  return(seu)
+}
+
+SC006_filt <- finalize_seurat(SC006_filt, dims = 1:20)
+SC008_filt <- finalize_seurat(SC008_filt, dims = 1:30)
+
+DimPlot(SC006_filt, label = TRUE) + ggtitle("SC006 — Final Clusters")
+DimPlot(SC008_filt, label = TRUE) + ggtitle("SC008 — Final Clusters")
+```
+
+------------------------------------------------------------------------
+
+### Step 8 — Save Cleaned Objects
+
+```{r}
+saveRDS(SC006_filt, file = "SC006_clean.rds")
+saveRDS(SC008_filt, file = "SC008_clean.rds")
+
+cat("Pipeline complete. Objects saved.\n")
+```
